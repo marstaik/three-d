@@ -92,6 +92,7 @@ pub async fn run() {
                 });
                 panel_width = gui_context.used_rect().width();
             },
+            |_| {},
         );
         while lights.len() < light_count {
             lights.push(Glow::new(&context, light_box));

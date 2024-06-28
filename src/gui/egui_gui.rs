@@ -13,7 +13,7 @@ pub use egui;
 pub struct GUI {
     painter: RefCell<Painter>,
     egui_context: egui::Context,
-    pub output: RefCell<Option<egui::FullOutput>>,
+    output: RefCell<Option<egui::FullOutput>>,
     viewport: Viewport,
     modifiers: Modifiers,
 }
@@ -61,6 +61,7 @@ impl GUI {
         viewport: Viewport,
         device_pixel_ratio: f32,
         callback: impl FnOnce(&egui::Context),
+        output_callback: impl FnOnce(&egui::FullOutput),
     ) -> bool {
         self.egui_context
             .set_pixels_per_point(device_pixel_ratio as f32);
@@ -93,9 +94,14 @@ impl GUI {
 
         self.egui_context.begin_frame(egui_input);
         callback(&self.egui_context);
-        *self.output.borrow_mut() = Some(self.egui_context.end_frame());
+
+        let output = self.egui_context.end_frame();
+
+        output_callback(&output);
 
         self.handle_events_from_egui(events);
+
+        *self.output.borrow_mut() = Some(output);
 
         self.egui_context.wants_pointer_input() || self.egui_context.wants_keyboard_input()
     }

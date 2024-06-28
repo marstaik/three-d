@@ -108,6 +108,7 @@ pub fn main() {
                 });
                 panel_width = gui_context.used_rect().width();
             },
+            |_| {},
         );
 
         // Set up rendering for this frame:

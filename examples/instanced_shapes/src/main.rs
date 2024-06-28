@@ -75,6 +75,7 @@ pub fn main() {
                 });
                 panel_width = gui_context.used_rect().width();
             },
+            |_| {},
         );
         let viewport = Viewport {
             x: (panel_width * frame_input.device_pixel_ratio) as i32,

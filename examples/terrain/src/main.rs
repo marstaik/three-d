@@ -187,6 +187,7 @@ pub async fn run() {
                         .changed();
                 });
             },
+            |_| {},
         );
         change |= parameter_change;
         change |= control.handle_events(&mut camera, &mut frame_input.events);

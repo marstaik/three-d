@@ -62,6 +62,7 @@ pub async fn run() {
                 });
                 panel_width = gui_context.used_rect().width();
             },
+            |_| {},
         );
         voxel_grid.material.color = Srgba::from(color);
 

@@ -79,6 +79,7 @@ pub async fn run() {
                 });
                 panel_width = gui_context.used_rect().width();
             },
+            |_| {},
         );
         model.material.albedo = Srgba::from(color);
 
