@@ -13,7 +13,7 @@ pub use egui;
 pub struct GUI {
     painter: RefCell<Painter>,
     egui_context: egui::Context,
-    output: RefCell<Option<egui::FullOutput>>,
+    pub output: RefCell<Option<egui::FullOutput>>,
     viewport: Viewport,
     modifiers: Modifiers,
 }
