@@ -2,6 +2,7 @@ use crate::control::*;
 use crate::core::*;
 use egui_glow::Painter;
 use std::cell::RefCell;
+use std::iter::Extend;
 
 #[doc(hidden)]
 pub use egui;
@@ -50,10 +51,12 @@ impl GUI {
     /// Initialises a new frame of the GUI and handles events.
     /// Construct the GUI (Add panels, widgets etc.) using the [egui::Context] in the callback function.
     /// This function returns whether or not the GUI has changed, ie. if it consumes any events, and therefore needs to be rendered again.
+    /// Additionally, you may pass additional egui events to provide support for custom functionality for things like copy-paste.
     ///
-    pub fn update(
+    pub fn update<'a>(
         &mut self,
         events: &mut [Event],
+        additional_egui_events: impl Iterator<Item = egui::Event>,
         accumulated_time_in_ms: f64,
         viewport: Viewport,
         device_pixel_ratio: f32,
@@ -62,6 +65,13 @@ impl GUI {
         self.egui_context
             .set_pixels_per_point(device_pixel_ratio as f32);
         self.viewport = viewport;
+
+        let egui_events = {
+            let mut e = build_egui_events(events, &viewport, device_pixel_ratio);
+            e.extend(additional_egui_events);
+            e
+        };
+
         let egui_input = egui::RawInput {
             screen_rect: Some(egui::Rect {
                 min: egui::Pos2 {
@@ -77,121 +87,7 @@ impl GUI {
             }),
             time: Some(accumulated_time_in_ms * 0.001),
             modifiers: (&self.modifiers).into(),
-            events: events
-                .iter()
-                .filter_map(|event| match event {
-                    Event::KeyPress {
-                        kind,
-                        modifiers,
-                        handled,
-                    } => {
-                        if !handled {
-                            Some(egui::Event::Key {
-                                key: kind.into(),
-                                pressed: true,
-                                modifiers: modifiers.into(),
-                                repeat: false,
-                                physical_key: None,
-                            })
-                        } else {
-                            None
-                        }
-                    }
-                    Event::KeyRelease {
-                        kind,
-                        modifiers,
-                        handled,
-                    } => {
-                        if !handled {
-                            Some(egui::Event::Key {
-                                key: kind.into(),
-                                pressed: false,
-                                modifiers: modifiers.into(),
-                                repeat: false,
-                                physical_key: None,
-                            })
-                        } else {
-                            None
-                        }
-                    }
-                    Event::MousePress {
-                        button,
-                        position,
-                        modifiers,
-                        handled,
-                    } => {
-                        if !handled {
-                            Some(egui::Event::PointerButton {
-                                pos: egui::Pos2 {
-                                    x: position.x / device_pixel_ratio as f32,
-                                    y: (viewport.height as f32 - position.y)
-                                        / device_pixel_ratio as f32,
-                                },
-                                button: button.into(),
-                                pressed: true,
-                                modifiers: modifiers.into(),
-                            })
-                        } else {
-                            None
-                        }
-                    }
-                    Event::MouseRelease {
-                        button,
-                        position,
-                        modifiers,
-                        handled,
-                    } => {
-                        if !handled {
-                            Some(egui::Event::PointerButton {
-                                pos: egui::Pos2 {
-                                    x: position.x / device_pixel_ratio as f32,
-                                    y: (viewport.height as f32 - position.y)
-                                        / device_pixel_ratio as f32,
-                                },
-                                button: button.into(),
-                                pressed: false,
-                                modifiers: modifiers.into(),
-                            })
-                        } else {
-                            None
-                        }
-                    }
-                    Event::MouseMotion {
-                        position, handled, ..
-                    } => {
-                        if !handled {
-                            Some(egui::Event::PointerMoved(egui::Pos2 {
-                                x: position.x / device_pixel_ratio as f32,
-                                y: (viewport.height as f32 - position.y)
-                                    / device_pixel_ratio as f32,
-                            }))
-                        } else {
-                            None
-                        }
-                    }
-                    Event::Text(text) => Some(egui::Event::Text(text.clone())),
-                    Event::MouseLeave => Some(egui::Event::PointerGone),
-                    Event::MouseWheel {
-                        delta,
-                        handled,
-                        modifiers,
-                        ..
-                    } => {
-                        if !handled {
-                            Some(match modifiers.ctrl {
-                                true => egui::Event::Zoom((delta.1 as f32 / 200.0).exp()),
-                                false => egui::Event::Scroll(match modifiers.shift {
-                                    true => egui::Vec2::new(delta.1 as f32, delta.0 as f32),
-                                    false => egui::Vec2::new(delta.0 as f32, delta.1 as f32),
-                                }),
-                            })
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
+            events: egui_events,
             ..Default::default()
         };
 
@@ -199,7 +95,40 @@ impl GUI {
         callback(&self.egui_context);
         *self.output.borrow_mut() = Some(self.egui_context.end_frame());
 
-        for event in events.iter_mut() {
+        self.handle_events_from_egui(events);
+
+        self.egui_context.wants_pointer_input() || self.egui_context.wants_keyboard_input()
+    }
+
+    ///
+    /// Render the GUI defined in the [update](Self::update) function.
+    /// Must be called in the callback given as input to a [RenderTarget], [ColorTarget] or [DepthTarget] write method.
+    ///
+    pub fn render(&self) -> Result<(), crate::CoreError> {
+        let output = self
+            .output
+            .borrow_mut()
+            .take()
+            .expect("need to call GUI::update before GUI::render");
+        let scale = self.egui_context.pixels_per_point();
+        let clipped_meshes = self.egui_context.tessellate(output.shapes, scale);
+        self.painter.borrow_mut().paint_and_update_textures(
+            [self.viewport.width, self.viewport.height],
+            scale,
+            &clipped_meshes,
+            &output.textures_delta,
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        #[allow(unsafe_code)]
+        unsafe {
+            use glow::HasContext as _;
+            self.painter.borrow().gl().disable(glow::FRAMEBUFFER_SRGB);
+        }
+        Ok(())
+    }
+
+    fn handle_events_from_egui<'a>(&mut self, events: &mut [Event]) {
+        for event in events {
             if let Event::ModifiersChange { modifiers } = event {
                 self.modifiers = *modifiers;
             }
@@ -245,34 +174,6 @@ impl GUI {
                 }
             }
         }
-        self.egui_context.wants_pointer_input() || self.egui_context.wants_keyboard_input()
-    }
-
-    ///
-    /// Render the GUI defined in the [update](Self::update) function.
-    /// Must be called in the callback given as input to a [RenderTarget], [ColorTarget] or [DepthTarget] write method.
-    ///
-    pub fn render(&self) -> Result<(), crate::CoreError> {
-        let output = self
-            .output
-            .borrow_mut()
-            .take()
-            .expect("need to call GUI::update before GUI::render");
-        let scale = self.egui_context.pixels_per_point();
-        let clipped_meshes = self.egui_context.tessellate(output.shapes, scale);
-        self.painter.borrow_mut().paint_and_update_textures(
-            [self.viewport.width, self.viewport.height],
-            scale,
-            &clipped_meshes,
-            &output.textures_delta,
-        );
-        #[cfg(not(target_arch = "wasm32"))]
-        #[allow(unsafe_code)]
-        unsafe {
-            use glow::HasContext as _;
-            self.painter.borrow().gl().disable(glow::FRAMEBUFFER_SRGB);
-        }
-        Ok(())
     }
 }
 
@@ -362,4 +263,142 @@ impl From<&MouseButton> for egui::PointerButton {
             MouseButton::Middle => egui::PointerButton::Middle,
         }
     }
+}
+
+///
+/// An intermediate event structure to translate a three_d Event to an egui Event.
+/// It holds the handled information separately.
+///
+struct GuiEvent {
+    event: egui::Event,
+    handled: Option<bool>,
+}
+
+fn try_convert_event(
+    event: &Event,
+    viewport: &Viewport,
+    device_pixel_ratio: f32,
+) -> Option<GuiEvent> {
+    match event {
+        Event::KeyPress {
+            kind,
+            modifiers,
+            handled,
+        } => Some(GuiEvent {
+            handled: Some(*handled),
+            event: egui::Event::Key {
+                key: kind.into(),
+                pressed: true,
+                modifiers: modifiers.into(),
+                repeat: false,
+                physical_key: None,
+            },
+        }),
+        Event::KeyRelease {
+            kind,
+            modifiers,
+            handled,
+        } => Some(GuiEvent {
+            handled: Some(*handled),
+            event: egui::Event::Key {
+                key: kind.into(),
+                pressed: false,
+                modifiers: modifiers.into(),
+                repeat: false,
+                physical_key: None,
+            },
+        }),
+        Event::MousePress {
+            button,
+            position,
+            modifiers,
+            handled,
+        } => Some(GuiEvent {
+            handled: Some(*handled),
+            event: egui::Event::PointerButton {
+                pos: egui::Pos2 {
+                    x: position.x / device_pixel_ratio as f32,
+                    y: (viewport.height as f32 - position.y) / device_pixel_ratio as f32,
+                },
+                button: button.into(),
+                pressed: true,
+                modifiers: modifiers.into(),
+            },
+        }),
+        Event::MouseRelease {
+            button,
+            position,
+            modifiers,
+            handled,
+        } => Some(GuiEvent {
+            handled: Some(*handled),
+            event: egui::Event::PointerButton {
+                pos: egui::Pos2 {
+                    x: position.x / device_pixel_ratio as f32,
+                    y: (viewport.height as f32 - position.y) / device_pixel_ratio as f32,
+                },
+                button: button.into(),
+                pressed: false,
+                modifiers: modifiers.into(),
+            },
+        }),
+        Event::MouseMotion {
+            position, handled, ..
+        } => Some(GuiEvent {
+            handled: Some(*handled),
+            event: egui::Event::PointerMoved(egui::Pos2 {
+                x: position.x / device_pixel_ratio as f32,
+                y: (viewport.height as f32 - position.y) / device_pixel_ratio as f32,
+            }),
+        }),
+        Event::Text(text) => Some(GuiEvent {
+            handled: None,
+            event: egui::Event::Text(text.clone()),
+        }),
+        Event::MouseLeave => Some(GuiEvent {
+            handled: None,
+            event: egui::Event::PointerGone,
+        }),
+        Event::MouseWheel {
+            delta,
+            handled,
+            modifiers,
+            ..
+        } => Some(GuiEvent {
+            handled: Some(*handled),
+            event: match modifiers.ctrl {
+                true => egui::Event::Zoom((delta.1 as f32 / 200.0).exp()),
+                false => egui::Event::Scroll(match modifiers.shift {
+                    true => egui::Vec2::new(delta.1 as f32, delta.0 as f32),
+                    false => egui::Vec2::new(delta.0 as f32, delta.1 as f32),
+                }),
+            },
+        }),
+        _ => None,
+    }
+}
+
+fn get_unhandled_event(event: GuiEvent) -> Option<egui::Event> {
+    if let Some(handled) = event.handled {
+        if handled {
+            None
+        } else {
+            Some(event.event)
+        }
+    } else {
+        Some(event.event)
+    }
+}
+
+fn build_egui_events<'a>(
+    events: &mut [Event],
+    viewport: &Viewport,
+    device_pixel_ratio: f32,
+) -> Vec<egui::Event> {
+    events
+        .iter()
+        .filter_map(|event| try_convert_event(event, viewport, device_pixel_ratio))
+        .map(|event| get_unhandled_event(event))
+        .flatten()
+        .collect()
 }

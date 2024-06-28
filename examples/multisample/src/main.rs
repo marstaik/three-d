@@ -71,6 +71,7 @@ pub fn main() {
         let mut panel_width = 0.0;
         gui.update(
             &mut frame_input.events,
+            std::iter::empty(),
             frame_input.accumulated_time,
             frame_input.viewport,
             frame_input.device_pixel_ratio,
